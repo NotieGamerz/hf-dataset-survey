@@ -5,6 +5,13 @@ validate_datasets.py
 Classify drone dataset samples using local VLM server(s) (OpenAI-compatible
 API), and append aggregated results to a resumable output CSV.
 
+v8: also checks each dataset for annotation/label evidence (schema types,
+repo file patterns, and a peek inside likely annotation json files) and
+appends "Is Annotation?", "Is Classification?", "Is Segmentation?", and
+"Annotation evidence" columns to the same output row. This is a heuristic
+check meant to save manual triage time, not a guarantee - see the
+"ANNOTATION DETECTION" section below for exactly what it looks for.
+
 v7: split image and video inference across two independently-configurable
 backends. Images go to whatever local server you already have running
 (e.g. mlx-omni-server / OMLX on Mac, default http://127.0.0.1:8000/v1) using
@@ -26,15 +33,19 @@ Media transport:
     base64 if you set --video-media-mode base64
 
 Usage:
-    python classify_drone_datasets.py --input input.csv --output output.csv \
+    python validate_datasets.py --input input.csv --output output.csv \
         --n-images 100
 
     # videos routed to a separate vLLM server on Linux, images stay on
     # the local mlx-omni-server:
-    python classify_drone_datasets.py --input input.csv --output output.csv \
+    python validate_datasets.py --input input.csv --output output.csv \
         --video-vlm-base-url http://192.168.1.50:8000/v1 \
         --video-vlm-model Qwen/Qwen2.5-VL-7B-Instruct \
         --video-vlm-api-key EMPTY
+
+    # skip the annotation check entirely (VLM classification only):
+    python validate_datasets.py --input input.csv --output output.csv \
+        --skip-annotation-check
 
 Input CSV needs at least a `dataset_id` column. Optional columns `License`/
 `license`, `Tags`/`tags`, `Last modified`/`last_modified`/`Created date` are
@@ -132,6 +143,14 @@ DOWNLOAD_HEADERS = {
 SESSION = requests.Session()
 SESSION.headers.update(DOWNLOAD_HEADERS)
 
+# ------------------------------------------------------------------------
+# Annotation detection config (see ANNOTATION DETECTION section below)
+# ------------------------------------------------------------------------
+ANNOTATION_PEEK_BYTES = 2_000_000  # only read the first ~2MB of a candidate json
+SEGMENTATION_KEYWORDS = ("segmentation", "mask", "panoptic", "seg_map", "semantic", "_seg")
+ANNOTATION_FILE_KEYWORDS = ("annotation", "instances_", "coco", "via_region", "labelme")
+CLASSIFICATION_FILE_KEYWORDS = ("classes.txt", "class_names", "labels.txt", "label_map")
+
 OUTPUT_COLUMNS = [
     "dataset_id",
     "Image / Video",
@@ -160,6 +179,10 @@ OUTPUT_COLUMNS = [
     "How recently updated?",
     "Used as training set for which model?",
     "--> Are the model weights available",
+    "Is Annotation?",
+    "Is Classification?",
+    "Is Segmentation?",
+    "Annotation evidence",
 ]
 
 DETERMINISTIC_NA_FIELDS = [
@@ -345,6 +368,171 @@ def fetch_media_pool(repo_id):
         return [], [], (error or "no_image_data")
 
     return image_urls, video_urls, ""
+
+
+# ------------------------------------------------------------------------
+# ANNOTATION DETECTION
+#
+# Heuristic check for whether a dataset contains annotations/labels, and
+# roughly what kind. Looks at three signal sources, cheapest first:
+#
+#   1. Dataset Viewer schema (reuses get_splits/get_first_rows above):
+#      - a ClassLabel-typed feature       -> classification, annotation
+#      - a feature named like mask/seg    -> segmentation, annotation
+#      - a feature named like
+#        label/bbox/category/objects/annotation -> annotation (generic)
+#
+#   2. Repository file listing (HfApi.list_repo_files):
+#      - *.xml                            -> annotation (likely Pascal VOC)
+#      - filenames with coco/instances/annotation(s).json
+#                                          -> annotation (likely COCO-style)
+#      - *.txt under a "labels" folder or with "yolo" in the name
+#                                          -> annotation (likely YOLO-style)
+#      - filenames with mask/segmentation/panoptic/semantic
+#                                          -> segmentation, annotation
+#      - classes.txt / labels.txt / label_map / class_names
+#                                          -> classification, annotation
+#
+#   3. A small peek inside ONE likely json annotation file (first ~2MB
+#      only, no full download) to confirm COCO-style keys:
+#      - "segmentation" key present       -> segmentation, annotation
+#      - "category_id" / "categories"     -> classification, annotation
+#      - "bbox" key present                -> annotation (detection-style)
+#
+# This is heuristic, not a guarantee - always spot-check the
+# "Annotation evidence" column before trusting it at scale, especially for
+# datasets with no filename/schema hints (e.g. labels baked into a
+# generically-named Parquet column).
+# ------------------------------------------------------------------------
+def peek_remote_file(dataset_id, filename, max_bytes=ANNOTATION_PEEK_BYTES):
+    """Reads only the first max_bytes of a file on the Hub, best-effort."""
+    url = f"https://huggingface.co/datasets/{dataset_id}/resolve/main/{filename}"
+    try:
+        r = requests.get(url, timeout=DOWNLOAD_TIMEOUT, stream=True, headers=AUTH_HEADERS)
+        if r.status_code != 200:
+            return ""
+        chunk = r.raw.read(max_bytes, decode_content=True)
+        r.close()
+        return chunk.decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def check_dataset_annotations(dataset_id, repo_files=None):
+    """Returns (is_annotation, is_classification, is_segmentation, evidence_list).
+
+    repo_files can be passed in if already fetched elsewhere this run to
+    avoid a duplicate list_repo_files call; otherwise it's fetched here.
+    """
+    evidence = []
+    is_annotation = False
+    is_classification = False
+    is_segmentation = False
+
+    # --- 1. Schema via Dataset Viewer -----------------------------------
+    try:
+        splits = get_splits(dataset_id)
+    except Exception:
+        splits = []
+
+    checked_configs = set()
+    for split_info in splits:
+        config = split_info.get("config", "default")
+        split = split_info.get("split", "train")
+        key = (config, split)
+        if key in checked_configs:
+            continue
+        checked_configs.add(key)
+
+        try:
+            data = get_first_rows(dataset_id, config, split)
+        except Exception:
+            continue
+
+        features = data.get("features", [])
+        if not features:
+            continue
+
+        for feat in features:
+            name = (feat.get("name") or "").lower()
+            type_str = json.dumps(feat.get("type", {})).lower()
+
+            if "classlabel" in type_str:
+                is_classification = True
+                is_annotation = True
+                evidence.append(f"ClassLabel feature '{feat.get('name')}' ({config}/{split})")
+
+            if any(k in name for k in ("mask", "segmentation", "seg_map", "panoptic")):
+                is_segmentation = True
+                is_annotation = True
+                evidence.append(f"Segmentation-like feature '{feat.get('name')}' ({config}/{split})")
+
+            if any(k in name for k in ("label", "category", "class", "bbox", "boxes", "objects", "annotation")):
+                is_annotation = True
+                evidence.append(f"Label/annotation-like feature '{feat.get('name')}' ({config}/{split})")
+
+        # one config/split with real features is generally enough signal;
+        # stop early to keep this cheap.
+        break
+
+    # --- 2. Repo file listing -------------------------------------------
+    files = repo_files
+    if files is None and HfApi is not None:
+        try:
+            files = HfApi(token=HF_TOKEN).list_repo_files(dataset_id, repo_type="dataset")
+        except Exception:
+            files = []
+    files = files or []
+
+    candidate_json_for_peek = None
+
+    for orig in files:
+        f = orig.lower()
+
+        if any(k in f for k in SEGMENTATION_KEYWORDS):
+            is_segmentation = True
+            is_annotation = True
+            evidence.append(f"Filename suggests segmentation: {orig}")
+
+        if f.endswith(".xml"):
+            is_annotation = True
+            evidence.append(f"XML file (possible Pascal VOC annotation): {orig}")
+
+        if f.endswith(".json") and any(k in f for k in ANNOTATION_FILE_KEYWORDS):
+            is_annotation = True
+            evidence.append(f"Possible COCO/annotation-style json: {orig}")
+            if candidate_json_for_peek is None:
+                candidate_json_for_peek = orig
+
+        if f.endswith(".txt") and ("label" in f or "yolo" in f or "/labels/" in f):
+            is_annotation = True
+            evidence.append(f"Possible YOLO-style txt label file: {orig}")
+
+        if any(k in f for k in CLASSIFICATION_FILE_KEYWORDS):
+            is_classification = True
+            is_annotation = True
+            evidence.append(f"Classification label-list file: {orig}")
+
+    # --- 3. Peek inside one candidate json to confirm COCO-style keys ---
+    if candidate_json_for_peek:
+        text = peek_remote_file(dataset_id, candidate_json_for_peek)
+        if text:
+            if '"segmentation"' in text:
+                is_segmentation = True
+                is_annotation = True
+                evidence.append(f"Confirmed 'segmentation' key inside {candidate_json_for_peek}")
+            if '"category_id"' in text or '"categories"' in text:
+                is_classification = True
+                is_annotation = True
+                evidence.append(f"Confirmed category/class info inside {candidate_json_for_peek}")
+            if '"bbox"' in text:
+                is_annotation = True
+                evidence.append(f"Confirmed 'bbox' key inside {candidate_json_for_peek} (detection-style)")
+
+    if not evidence:
+        evidence.append("No annotation/classification/segmentation signal found (may just need manual review).")
+
+    return is_annotation, is_classification, is_segmentation, evidence
 
 
 # ------------------------------------------------------------------------
@@ -785,7 +973,8 @@ def compute_majority_resolution(resolutions):
     return top_res, top_count, total
 
 
-def build_aggregated_row(dataset_id, results, n_sampled, resolutions=None, input_row=None, media_summary=""):
+def build_aggregated_row(dataset_id, results, n_sampled, resolutions=None, input_row=None, media_summary="",
+                          annotation_result=None):
     row = {col: "NA" for col in OUTPUT_COLUMNS}
     row["dataset_id"] = dataset_id
     row["Availability and licensing (free/which license)"] = extract_license_info(input_row)
@@ -795,6 +984,13 @@ def build_aggregated_row(dataset_id, results, n_sampled, resolutions=None, input
     row["Resolution of images (majority)"] = res_label
     row["Resolution of images (majority) - count"] = res_count
     row["Resolution of images (majority) - total"] = res_total
+
+    if annotation_result is not None:
+        is_ann, is_cls, is_seg, evidence = annotation_result
+        row["Is Annotation?"] = is_ann
+        row["Is Classification?"] = is_cls
+        row["Is Segmentation?"] = is_seg
+        row["Annotation evidence"] = " | ".join(evidence) if isinstance(evidence, list) else str(evidence)
 
     if not results:
         row["Image / Video"] = f"NA (VLM failed on all {n_sampled} sampled items{(' - ' + media_summary) if media_summary else ''})"
@@ -966,6 +1162,9 @@ def main():
     parser.add_argument("--images-dir", default="dataset_images")
     parser.add_argument("--limit", type=int, default=None, help="Cap number of DATASETS processed this run")
     parser.add_argument("--skip-validation", action="store_true", help="Skip setup validation (for resume/testing)")
+    parser.add_argument("--skip-annotation-check", action="store_true",
+                         help="Skip the annotation/classification/segmentation detection step entirely "
+                              "(those 4 columns will be left as 'NA (skipped)')")
     keep_group = parser.add_mutually_exclusive_group()
     keep_group.add_argument("--keep-videos", dest="keep_videos", action="store_true")
     keep_group.add_argument("--no-keep-videos", dest="keep_videos", action="store_false")
@@ -1003,7 +1202,8 @@ def main():
         f"Already done: {len(done_ids)} datasets. Processing {len(rows) - len(done_ids)} remaining... "
         f"(n_images={args.n_images}, video_window={args.video_window_seconds}s @ {int(args.video_start_fraction*100)}% mark, "
         f"image_backend={args.vlm_base_url} [{args.image_media_mode}], "
-        f"video_backend={args.video_vlm_base_url} [{args.video_media_mode}], keep_videos={args.keep_videos})"
+        f"video_backend={args.video_vlm_base_url} [{args.video_media_mode}], keep_videos={args.keep_videos}, "
+        f"annotation_check={'off' if args.skip_annotation_check else 'on'})"
     )
     if args.video_media_mode == "local-path":
         print(f"  Media path (video backend must have --allowed-local-media-path covering this): {args.images_dir}")
@@ -1022,8 +1222,23 @@ def main():
         print(f"[{i+1}/{len(rows)}] {dataset_id}: discovering media...", flush=True)
         image_urls, video_urls, fetch_error = fetch_media_pool(dataset_id)
 
+        # Annotation/classification/segmentation check - independent of
+        # whether image/video discovery above succeeded, since annotation
+        # files often live alongside (or instead of) the media itself.
+        if args.skip_annotation_check:
+            annotation_result = ("NA (skipped)", "NA (skipped)", "NA (skipped)", ["Annotation check skipped (--skip-annotation-check)"])
+        else:
+            print(f"    checking for annotations/labels...", end=" ", flush=True)
+            try:
+                annotation_result = check_dataset_annotations(dataset_id)
+                is_ann, is_cls, is_seg, _ = annotation_result
+                print(f"Annotation={is_ann} Classification={is_cls} Segmentation={is_seg}", flush=True)
+            except Exception as e:
+                annotation_result = ("NA (check failed)", "NA (check failed)", "NA (check failed)", [f"check failed: {e}"])
+                print(f"check failed: {e}", flush=True)
+
         if not image_urls and not video_urls:
-            out_row = build_aggregated_row(dataset_id, [], 0, input_row=row)
+            out_row = build_aggregated_row(dataset_id, [], 0, input_row=row, annotation_result=annotation_result)
             out_row["Image / Video"] = f"NA (live media discovery failed: {fetch_error})"
             append_row(args.output, out_row, OUTPUT_COLUMNS)
             done_ids.add(dataset_id)
@@ -1226,7 +1441,8 @@ def main():
         early_stop_note = " - early stopped, high Unclear rate" if stopped_early else ""
         media_summary = f"{len(sampled_images)} images planned{early_stop_note}, {len(sampled_videos)} videos (whole-clip)"
         out_row = build_aggregated_row(
-            dataset_id, results, n_sampled_total, resolutions=resolutions, input_row=row, media_summary=media_summary
+            dataset_id, results, n_sampled_total, resolutions=resolutions, input_row=row, media_summary=media_summary,
+            annotation_result=annotation_result,
         )
         append_row(args.output, out_row, OUTPUT_COLUMNS)
         done_ids.add(dataset_id)
