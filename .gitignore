@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Pipeline outputs — don't commit results, only code
+logs/
+raw_datasets/
+hf_*_candidates/
+classified_*.csv
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
