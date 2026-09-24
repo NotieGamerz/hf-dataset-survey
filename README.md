@@ -81,7 +81,7 @@ flowchart TD
 ## Project Structure
 
 ```text
-Final_Pipeline/
+hf-dataset-survey/
 ├── Survey_script.py                          # Master entrypoint orchestrating stages 1-4
 ├── fetch_query_metadata_from_huggingface.py   # Stage 1: HF Hub query & metadata harvester
 ├── dataset_cleaner.py                        # Stage 2: Media classification, deduplication & split
